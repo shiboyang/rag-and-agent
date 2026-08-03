@@ -10,8 +10,25 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
+from sentence_transformers import CrossEncoder
 
 load_dotenv(r"../../.env")
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
+
+
+class OfflineRerankComponent:
+    def __init__(self, top_n: int = 6, model_name: str = "BAAI/bge-reranker-base"):
+        self.top_n = top_n
+        self.model = CrossEncoder(model_name)
+
+    def rerank(self, query: str, docs: List[Document]):
+        pairs = [(query, doc.page_content) for doc in docs]
+        scores = self.model(pairs)
+        socred_docs = list(zip(docs, scores))
+        socred_docs.sort(key=lambda x: x[1], reverse=True)
+        reranked_docs = [doc for doc, score in socred_docs[:self.top_n]]
+        return reranked_docs
 
 
 class LLMComponent:
@@ -47,51 +64,15 @@ class DocumentStoreComponent:
         )
 
 
-class MultiPathRetriever:
-    def __init__(self, vector_store: Chroma, top_k: int = 6):
-        self.mp_retriever = vector_store.as_retriever(
-            search_type="mmr",
-            search_kwargs={
-                "k": top_k * 2,
-                "lambda_mult": 0.5
-            }
-        )
-        self.sim_retriever = vector_store.as_retriever(
-            search_type="similarity",
-            search_kwargs={
-                "k": top_k
-            }
-        )
+class RerankRetrieverComponent:
+    def __init__(self, vector_store: Chroma, top_k: int = 12, top_n: int = 6):
+        self.similarity_retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": top_k})
+        self.reranker = OfflineRerankComponent(top_n)
 
     def retrieve(self, query):
-        mpr_docs = self.mp_retriever.invoke(query)
-        sim_docs = self.sim_retriever.invoke(query)
-        return sim_docs, mpr_docs
-
-
-class RRFusionComponent:
-    def __init__(self, k: int):
-        self.k = k
-
-    def rrfusion(self, retrieved_docs):
-        scores = defaultdict(float)
-        doc_map = {}
-
-        for docs in retrieved_docs:
-            for rank, doc in enumerate(docs, start=1):
-                doc_id = doc.id
-                scores[doc_id] += 1.0 / (self.k + rank)
-                if doc_id not in doc_map:
-                    doc_map[doc_id] = doc
-
-        sorted_docs = sorted(scores.items(), key=lambda x: -x[1])
-        return [doc_map[sdoc[0]] for sdoc in sorted_docs]
-
-    def rrfusion_docs(self, retrieved_docs):
-        sorted_docs = self.rrfusion(retrieved_docs)
-        k_docs = sorted_docs[:self.k]
-
-        return k_docs
+        docs = self.similarity_retriever.invoke(query)
+        reranked_docs = self.reranker.rerank(query, docs)
+        return reranked_docs
 
 
 class RAGState(TypedDict):
@@ -104,19 +85,16 @@ class RAGState(TypedDict):
 class RRFRAGPipeline:
     def __init__(self, top_k: int = 6, rrf_k: int = 60):
         self.doc_store = DocumentStoreComponent("/home/shiby/code/rag-and-agent/hw4/data/db", "test_collect")
-        self.retriever = MultiPathRetriever(self.doc_store.vector_store)
-        self.rrfusino = RRFusionComponent(rrf_k)
+        self.retriever = RerankRetrieverComponent(self.doc_store.vector_store)
         self.llm = LLMComponent("qwen-turbo")
         self.graph = self.create_rag_graph()
 
     def retriever_node(self, state: RAGState):
         question = state["question"]
         retrieved_docs = self.retriever.retrieve(question)
-        docs = self.rrfusino.rrfusion_docs(retrieved_docs)
-        context = "\n\n".join([doc.page_content for doc in docs])
-
+        context = "\n\n".join([doc.page_content for doc in retrieved_docs])
         state["context"] = context
-        state["retrieved_docs"] = docs
+        state["retrieved_docs"] = retrieved_docs
         return state
 
     def generate_node(self, state: RAGState):
