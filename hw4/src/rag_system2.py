@@ -115,7 +115,7 @@ class RRFusionComponent:
         result = sorted(scores.items(), key=lambda x: -x[1])
         return result
 
-    def fuse_docs(self, rrm_result):
+    def rrfusion_docs(self, rrm_result):
         fused_docs = self.rrfusion(rrm_result)
         k_docs = []
         for doc_content, score in fused_docs[:self.k]:
