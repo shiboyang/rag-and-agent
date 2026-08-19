@@ -1,5 +1,4 @@
 import asyncio
-# import logging
 import os
 
 from langchain.agents import create_agent
@@ -7,12 +6,9 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-# logging.basicConfig(level=logging.DEBUG)
-# logging.getLogger("mcp").setLevel(logging.DEBUG)
-
 load_dotenv(r"../.env")
 
-print(os.getenv("API_KEY"))
+
 def load_mcp_config():
     api_key = os.getenv("API_KEY")
     mcp_config = {
